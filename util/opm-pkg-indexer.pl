@@ -6,6 +6,7 @@ use v5.10.1;
 use strict;
 use warnings;
 
+use sigtrap qw(die INT);
 use Time::HiRes qw( sleep );
 use URI ();
 use LWP::UserAgent ();
@@ -15,6 +16,8 @@ use File::Spec ();
 use File::Copy qw( copy );
 use File::Path qw( make_path );
 use Digest::MD5 ();
+use Getopt::Std qw( getopts );
+use Cwd qw( cwd );
 
 sub http_req ($$$);
 sub main ();
@@ -27,10 +30,21 @@ my $json_xs = JSON::XS->new->utf8;
 
 my $version = '0.0.1';
 
+my %opts;
+getopts("di:", \%opts) or die;
+
+my $as_daemon = $opts{d};
+my $iterations = $opts{i} || 0;  # 0 means infinite
+
 my $api_server_host = shift || "127.0.0.1";
 my $api_server_port = shift || 8080;
 my $failed_dir = shift || "/tmp/failed";
 my $original_dir = shift || "/tmp/original";
+
+my $SpecialDepPat = qr/^(?:openresty|luajit|ngx_(?:http_)?lua|nginx)$/;
+
+my $name = "opm-pkg-indexer";
+my $pid_file = File::Spec->rel2abs("$name.pid");
 
 $ENV{LC_ALL} = 'C';
 
@@ -46,16 +60,77 @@ $ua->agent("opm pkg indexer" . $version);
 my $req = HTTP::Request->new();
 $req->header(Host => "opm.openresty.org");
 
-my $MAX_FAILS = 100;
+my $MAX_SLEEP_TIME = 1;  # sec
 my $MAX_HTTP_TRIES = 10;
 my $MAX_DEPS = 100;
 
+if (-f $pid_file) {
+    open my $in, $pid_file
+        or die "cannot open $pid_file for reading: $!\n";
+    my $pid = <$in>;
+    close $in;
+
+    chomp $pid;
+
+    if (!$pid) {
+        unlink $pid_file or die "cannot rm $pid_file: $!\n";
+
+    } else {
+        my $file = $pid_file;
+        undef $pid_file;
+        die "Found pid file $file. ",
+            "Another process $pid may still be running.\n";
+    }
+}
+
+if ($opts{d}) {
+    my $log_file = "$name.log";
+
+    require Proc::Daemon;
+
+    my $daemon = Proc::Daemon->new(
+        work_dir => cwd,
+        child_STDOUT => "+>>$log_file",
+        child_STDERR => "+>>$log_file",
+        pid_file => $pid_file,
+    );
+
+    my $pid = $daemon->Init;
+    if ($pid == 0) {
+        # in the forked daemon
+
+    } else {
+        # in parent
+        #warn "write pid file $pid_file: $pid";
+        #write_pid_file($pid);
+        exit;
+    }
+
+} else {
+    write_pid_file($$);
+}
+
+sub cleanup {
+    if (!$as_daemon) {
+        if (defined $pid_file && -f $pid_file) {
+            unlink $pid_file;
+        }
+    }
+}
+
+END {
+    cleanup();
+    exit;
+}
+
 main();
 
+unlink $pid_file or die "cannot remove $pid_file: $!\n";;
+
 sub main () {
-    my $fails = 0;
-    #while (1) {
-    for (1) {
+    my $sleep_time = 0.001;
+    #warn "iterations: $iterations";
+    for (my $i = 1; $iterations <= 0 || $i <= $iterations; $i++) {
         my $ok;
         eval {
             $ok = process_cycle();
@@ -65,17 +140,18 @@ sub main () {
         }
 
         if (!$ok) {
-            sleep 0.001 * $fails;
+            #warn $sleep_time;
+            sleep $sleep_time;
 
-            if ($fails < $MAX_FAILS) {
-                $fails++;
+            if ($sleep_time < $MAX_SLEEP_TIME) {
+                $sleep_time *= 2;
             }
 
             next;
         }
 
         # ok
-        $fails = 0;
+        $sleep_time = 0.001;
     }
 }
 
@@ -368,7 +444,14 @@ sub process_cycle () {
                     my ($res, $err) = http_req($uri, undef, { 404 => 1 });
 
                     if (!$res) {
-                        $errstr = "package dependency check failed on \"$name $op $ver\": $err";
+                        my $spec;
+                        if (!defined $op || !defined $ver) {
+                            $spec = '';
+                        } else {
+                            $spec = " $op $ver";
+                        }
+
+                        $errstr = "package dependency check failed on \"$name$spec\": $err";
                         warn $errstr;
                         goto FAIL_UPLOAD;
                     }
@@ -618,7 +701,7 @@ sub parse_deps {
             if ($full_name =~ m{^ ([-\w]+) / ([-\w]+)  }x) {
                 ($account, $name) = ($1, $2);
 
-            } elsif ($full_name eq 'openresty' || $full_name eq 'luajit') {
+            } elsif ($full_name =~ $SpecialDepPat) {
                 $name = $full_name;
 
             } else {
@@ -635,7 +718,7 @@ sub parse_deps {
             if ($full_name =~ m{^ ([-\w]+) / ([-\w]+)  }x) {
                 ($account, $name) = ($1, $2);
 
-            } elsif ($full_name eq 'openresty' || $full_name eq 'luajit') {
+            } elsif ($full_name =~ $SpecialDepPat) {
                 $name = $full_name;
 
             } else {
@@ -661,4 +744,12 @@ sub parse_deps {
 
     @parsed = sort { $a->[1] cmp $b->[1] } @parsed;
     return \@parsed;
+}
+
+sub write_pid_file {
+    my $pid = shift;
+    open my $out, ">$pid_file"
+        or die "cannot open $pid_file for writing: $!\n";
+    print $out $pid;
+    close $out;
 }

@@ -43,6 +43,8 @@ my %Licenses = (
     proprietary => 'Proprietary',
 );
 
+my $SpecialDepPat = qr/^(?:openresty|luajit|ngx_(?:http_)?lua|nginx)$/;
+
 sub err (@);
 sub shell (@);
 sub find_sys_install_dir ();
@@ -58,6 +60,8 @@ sub create_stub_rc_file ($);
 sub read_ini ($);
 sub init_installation_ctx ($);
 sub cmp_version ($$);
+sub search_pkg_name ($$);
+sub test_version_spec ($$$$$);
 
 GetOptions("h|help",          \(my $help),
            "cwd",             \(my $install_into_cwd))
@@ -110,6 +114,9 @@ for ($cmd) {
     } elsif ($_ eq 'update') {
         do_update();
 
+    } elsif ($_ eq 'search') {
+        do_search(shift @ARGV);
+
     } else {
         warn "ERROR: unknown command: $cmd\n\n";
         usage(1);
@@ -130,7 +137,7 @@ sub do_get {
         err "no packages specified for fetch.\n";
     }
 
-    my $deps = parse_deps(\@_, "(command-line argument)");
+    my $deps = parse_deps(\@_, "(command-line argument)", 1);
 
     #warn Dumper($deps);
 
@@ -173,7 +180,7 @@ sub do_build ($) {
     }
 
     if (length $dist_name < 3
-        || $dist_name =~ /[^-\w]|^(?:nginx|luajit|resty|openresty|opm|restydoc.*)$/i)
+        || $dist_name =~ /[^-\w]|^(?:nginx|luajit|resty|openresty|opm|restydoc.*|ngx_.*|.*-nginx-module)$/i)
     {
         err "$dist_file: bad dist name: $dist_name\n";
     }
@@ -245,6 +252,8 @@ sub do_build ($) {
         $RepoLink = $repo_link;
     }
 
+=begin comment
+
     if (!$server_build) {
         my $out = `curl -sS -I $repo_link 2>&1`;
         if ($out =~ m{^ HTTP/1\.\d \s+ (\d+) \b}ix) {
@@ -254,9 +263,13 @@ sub do_build ($) {
                     "got HTTP status code $status.\n";
             }
         } else {
-            err "$dist_file: bad repo_likn $repo_link: $out\n";
+            err "$dist_file: bad repo_link $repo_link: $out\n";
         }
     }
+
+=end comment
+
+=cut
 
     my $version = delete $default_sec->{version};
 
@@ -279,9 +292,16 @@ sub do_build ($) {
         if ($ndeps >= $MAX_DEPS) {
             err "$dist_file: requires: too many dependencies: $ndeps\n";
         }
-    }
 
-    # TODO check validity of the dependences.
+        if (!$server_build) {
+            my $ctx = init_installation_ctx(0);
+            $ctx->{level} = 1;
+
+            for my $dep (@$deps) {
+                install_target($ctx, $dep);
+            }
+        }
+    }
 
     my $lib_dir = delete $default_sec->{lib_dir};
 
@@ -626,7 +646,7 @@ sub parse_deps {
             if ($full_name =~ m{^ ([-\w]+) / ([-\w]+)  }x) {
                 ($account, $name) = ($1, $2);
 
-            } elsif ($full_name eq 'openresty' || $full_name eq 'luajit') {
+            } elsif ($full_name =~ $SpecialDepPat) {
                 $name = $full_name;
 
             } else {
@@ -647,7 +667,7 @@ sub parse_deps {
             if ($full_name =~ m{^ ([-\w]+) / ([-\w]+)  }x) {
                 ($account, $name) = ($1, $2);
 
-            } elsif ($full_name eq 'openresty' || $full_name eq 'luajit') {
+            } elsif ($full_name =~ $SpecialDepPat) {
                 $name = $full_name;
 
             } else {
@@ -897,23 +917,80 @@ sub install_target ($$) {
 
     if (!$account) {
         if ($ctx->{level} == 0) {
-            if ($name =~ /^(?:luajit|openresty)/i) {
+            if ($name =~ $SpecialDepPat) {
                 err "you cannot install $name via opm.\n";
-
-            } else {
-                # TODO do package search remotely
-                err "bad package name; you must specify an account prefix, ",
-                    "like \"openresty/lua-resty-lrucache\".\n"
             }
 
+            warn "ERROR: package name $name is not prefixed by ",
+                 "an account name.\nFinding candidates...\n";
+            search_pkg_name($ctx, $name);
             return;
         }
 
         # nested, resolved as a true dependency.
 
-        if ($name =~ /^(?:luajit|openresty)/i) {
-            # TODO check LuaJIT and OpenResty versions.
-            return;
+        if ($name =~ $SpecialDepPat) {
+            my $resty = $ctx->{resty};
+
+            if ($name eq 'luajit') {
+                my $out = `$resty -e 'print(jit.version)'`;
+                if ($? != 0 || !defined $out || $out !~ /^LuaJIT (\d+\.\d+\.\d+)/) {
+                    err "$name is required but is not available ",
+                        "according to $resty: ", $out // '';
+                }
+
+                my $luajit_ver = $1;
+                test_version_spec($name, $luajit_ver, $op, $ver, $resty);
+                return;
+            }
+
+            if ($name eq 'nginx') {
+                my $out = `$resty -e 'print(ngx.config.nginx_version)'`;
+                if ($? != 0 || !defined $out || $out !~ /^(\d+)(\d{3})(\d{3})$/) {
+                    err "$name is required but is not available ",
+                        "according to $resty: ", $out // '';
+                }
+
+                my $nginx_ver = join ".", $1 + 0, $2 + 0, $3 + 0;
+                #die "nginx version: $nginx_ver";
+                test_version_spec($name, $nginx_ver, $op, $ver, $resty);
+                return;
+            }
+
+            if ($name =~ /^ngx_(?:http_)?lua$/) {
+                my $out = `$resty -e 'print(ngx.config.ngx_lua_version)'`;
+                if ($? != 0 || !defined $out || $out !~ /^(\d{4,})$/) {
+                    err "$name is required but is not available ",
+                        "according to $resty: ", $out // '';
+                }
+
+                my $v = $1;
+                my $v1 = $v % 1000;
+                my $tmp = int($v / 1000);
+                my $v2 = $tmp % 1000;
+                $tmp = int($tmp / 1000);
+                my $v3 = $tmp % 1000;
+
+                my $ngx_lua_ver = "$v3.$v2.$v1";
+                #die "ngx_lua version: $ngx_lua_ver";
+                test_version_spec($name, $ngx_lua_ver, $op, $ver, $resty);
+                return;
+            }
+
+            if ($name eq 'openresty') {
+                my $out = `$resty -v 2>&1`;
+                if ($? != 0 || !defined $out || $out !~ m!\bopenresty/(\d+(?:\.\d+){3})!) {
+                    err "$name is required but is not available ",
+                        "according to $resty: ", $out // '';
+                }
+
+                my $openresty_ver = $1;
+                #die "openresty version: $openresty_ver";
+                test_version_spec($name, $openresty_ver, $op, $ver, $resty);
+                return;
+            }
+
+            die "unknown name: $name";
 
         } else {
             err "bad package name; you must specify an account prefix, ",
@@ -1361,12 +1438,12 @@ sub get_install_dir () {
 }
 
 sub find_sys_install_dir () {
-    my $dir = realpath(
-                File::Spec->catdir(
-                    $FindBin::RealBin, "..", "site"));
+    my $path = File::Spec->catdir($FindBin::RealBin, "..", "site");
+    my $dir = realpath($path);
 
     if (!defined $dir || !-d $dir) {
-        err "cannot find OpenResty system installation directory.\n";
+        err "cannot find OpenResty system installation directory ",
+            "($path not found).\n";
     }
 
     return $dir;
@@ -1628,6 +1705,10 @@ sub do_list {
 }
 
 sub do_info {
+    if (@_ == 0) {
+        err "no packages specified for info.\n";
+    }
+
     my $install_dir = get_install_dir();
 
     my $manifest_dir = File::Spec->catfile($install_dir, "manifest");
@@ -1699,6 +1780,10 @@ _EOC_
 }
 
 sub do_upgrade {
+    if (@_ == 0) {
+        err "no packages specified for upgrade.\n";
+    }
+
     my $ctx = init_installation_ctx(1);
     my $manifest_dir = $ctx->{manifest_dir};
 
@@ -1764,6 +1849,11 @@ sub init_installation_ctx ($) {
         make_path $manifest_dir;
     }
 
+    my $resty = File::Spec->catfile($install_dir, "bin", "resty");
+    if (!-f $resty || !-x $resty) {
+        $resty = "resty";  # relying on PATH now
+    }
+
     opendir my $dh, $manifest_dir
         or err "failed to open directory $manifest_dir: $!\n";
 
@@ -1801,6 +1891,7 @@ sub init_installation_ctx ($) {
         installed_files => \%installed_files,  # for clashing files from different pkgs
         level => 0,
         upgrade => $upgrade,
+        resty => $resty,
     };
 
     return $ctx;
@@ -1862,6 +1953,101 @@ sub do_update {
         or err "failed to close directory $manifest_dir: $!\n";
 }
 
+sub do_search {
+    my $query = shift;
+
+    if (!$query) {
+        err "no query specified.\n";
+    }
+
+    if ($query =~ /[^-.\w]/) {
+        err "bad query: $query\n";
+    }
+
+    if (length $query > 128) {
+        err "query too long: ", length $query, " bytes.\n";
+    }
+
+    my ($rcfile, $data) = get_rc_file();
+
+    my $default_sec = delete $data->{default};
+
+    my $download_url = delete $default_sec->{download_server};
+    if (!$download_url) {
+        err "$rcfile: no download_server specified.\n";
+    }
+
+    if ($download_url !~ m{^https?://}) {
+        err "$rcfile: the value of download_server must be ",
+            "led by https:// or http://.\n";
+    }
+
+    my $url = "$download_url/api/pkg/search?q=$query";
+    my $out = `curl -i -sS '$url' 2>&1`;
+    my $status;
+    if ($? == 0 && $out =~ m{^ HTTP/1\.\d \s+ (\d+) \b}ix) {
+        $status = $1;
+
+    } else {
+        err "failed to search: server error.\n";
+    }
+
+    $out =~ s/.*?\r?\n\r?\n//s;
+
+    if ($status != 200) {
+        err "failed to search on server: $out";
+    }
+
+    # TODO highlight hits
+    print $out;
+}
+
+sub search_pkg_name ($$) {
+    my ($ctx, $name) = @_;
+
+    my $download_url = $ctx->{download_url} or die;
+
+    my $url = "$download_url/api/pkg/search/name?q=$name";
+    my $out = `curl -i -sS '$url' 2>&1`;
+    my $status;
+    if ($? == 0 && $out =~ m{^ HTTP/1\.\d \s+ (\d+) \b}ix) {
+        $status = $1;
+
+    } else {
+        err "failed to find package: server error.\n";
+    }
+
+    $out =~ s/.*?\r?\n\r?\n//s;
+
+    if ($status != 200) {
+        err "failed to find package $name on server: $out";
+    }
+
+    print $out;
+}
+
+sub test_version_spec ($$$$$) {
+    my ($name, $actual_ver, $op, $ver, $source) = @_;
+
+    return if !defined $op || !defined $ver;
+
+    my $rc = cmp_version($actual_ver, $ver);
+    #warn "cmp res: $rc";
+
+    if ($op eq '>=') {
+        return if $rc >= 0;
+
+    } elsif ($op eq '=') {
+        return if $rc == 0;
+
+    } elsif ($op eq '>') {
+        return if $rc > 0;
+    }
+
+    err "$name $op $ver required but found $name ",
+        "$actual_ver according to $source.\n";
+}
+
 sub err (@) {
     die "ERROR: ", @_;
 }
@@ -1904,6 +2090,9 @@ Commands:
 
     remove PACKAGE...   Remove (or uninstall) the specified packages. Short package names
                         like "lua-resty-lock" are acceptable.
+
+    search PATTERN      Search on the server for packages matching the user pattern in their
+                        names or abstracts.
 
     server-build        Build a final package tarball ready for distribution on the server.
                         This command is usually used by the server to verify the uploaded

@@ -13,6 +13,16 @@ Table of Contents
 * [Usage](#usage)
 * [Author Workflow](#author-workflow)
 * [File dist.ini](#file-distini)
+    * [name](#name)
+    * [abstract](#abstract)
+    * [author](#author)
+    * [license](#license)
+    * [requires](#requires)
+    * [repo_link](#repo_link)
+    * [is_original](#is_original)
+    * [lib_dir](#lib_dir)
+    * [main_module](#main_module)
+    * [doc_dir](#doc_dir)
 * [File .opmrc](#file-opmrc)
 * [Prerequisites](#prerequisites)
     * [For opm](#for-opm)
@@ -35,6 +45,9 @@ For library users:
 ```bash
 # show usage
 opm --help
+
+# search package names and abstracts with the user pattern "lock".
+opm search lock
 
 # account is a github account (either a github user or a github org);
 # lua-resty-foo is the library name under that github account.
@@ -106,7 +119,7 @@ The server side web application is built upon OpenResty and written in Lua.
 You can find the server code under the `web/` directory.
 
 Unlike many other package management systems like `cpan`, `luarocks`, `npm`,
-or `pip`, `opm` adopts a package naming discipline similar to `github`, that
+or `pip`. Our `opm` adopts a package naming discipline similar to `github`, that
 is, every package name should be qualified by a publisher ID, as in
 `agentzh/lua-resty-foo` where `agentzh` is the publisher ID while `lua-resty-foo`
 is the package name itself. This naming requirement voids the temptation of
@@ -168,6 +181,9 @@ Commands:
     remove PACKAGE...   Remove (or uninstall) the specified packages. Short package names
                         like "lua-resty-lock" are acceptable.
 
+    search PATTERN      Search on the server for packages matching the user pattern in their
+                        names or abstracts.
+
     server-build        Build a final package tarball ready for distribution on the server.
                         This command is usually used by the server to verify the uploaded
                         package tarball.
@@ -197,15 +213,15 @@ One example `dist.ini` file looks like below for OpenResty's
 
 ```ini
 # distribution config for opm packaging
-name=lua-resty-core
-abstract=New FFI-based Lua API for the ngx_lua module
-author=Yichun "agentzh" Zhang (agentzh)
-is_original=yes
-license=2bsd
-lib_dir=lib
-doc_dir=lib
-repo_link=https://github.com/openresty/lua-resty-core
-main_module=lib/resty/core/base.lua
+name = lua-resty-core
+abstract = New FFI-based Lua API for the ngx_lua module
+author = Yichun "agentzh" Zhang (agentzh)
+is_original = yes
+license = 2bsd
+lib_dir = lib
+doc_dir = lib
+repo_link = https://github.com/openresty/lua-resty-core
+main_module = lib/resty/core/base.lua
 requires = luajit, openresty = 1.11.2.1, openresty/lua-resty-lrucache >= 0.04
 ```
 
@@ -248,7 +264,247 @@ provide his GitHub personal access token in her `~/.opmrc` file. Only the `user:
 File dist.ini
 =============
 
-TODO
+The `dist.ini` file specifies the meta data of a package and is used by `opm build`
+to generate a tarball that is ready to upload to the remote pacakge server. This
+file should sit at the top of the library or module source tree.
+
+This file uses the [INI file format](https://en.wikipedia.org/wiki/INI_file). It
+contains the following keys (or properties) in the default top-level section:
+
+[Back to TOC](#table-of-contents)
+
+name
+----
+
+Specifies the name of the package (excluding version numbers). For example,
+
+```ini
+name = lua-resty-limit-traffic
+```
+
+The name can only contain letters, digits, and dashes (`-`).
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+abstract
+--------
+
+Abstract for the current package.
+
+```ini
+abstract = New FFI-based Lua API for the ngx_lua module
+```
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+author
+------
+
+Specifies one or more authors of the libraries. For instance,
+
+```ini
+author = Yichun Zhang (agentzh)
+```
+
+The names of multiple authors should
+be separated by a comma, with optional surrounding spaces.
+
+```ini
+author = Yichun Zhang (agentzh), Dejiang Zhu
+```
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+license
+-------
+
+Specifies the license for the library. For example,
+
+```ini
+license = 3bsd
+```
+
+This assigns the 3-clause BSD license to the current package.
+
+Special IDs for common code licenses are required. For now, the following IDs are supported:
+
+* `2bsd`
+
+BSD 2-Clause "Simplified" or "FreeBSD" license
+* `3bsd`
+
+BSD 3-Clause "New" or "Revised" license
+* `apache2`
+
+Apache License 2.0
+* `artistic`
+
+Artistic License
+* `artistic2`
+
+Artistic License 2.0
+* `cddl`
+
+Common Development and Distribution License
+* `eclipse`
+
+Eclipse Public License
+* `gpl`
+
+GNU General Public License (GPL)
+* `gpl2`
+
+GNU General Public License (GPL) version 2
+* `gpl3`
+
+GNU General Public License (GPL) version 3
+* `lgpl`
+
+GNU Library or "Lesser" General Public License (LGPL)
+* `mit`
+
+MIT license
+* `mozilla2`
+
+Mozilla Public License 2.0
+* `proprietary`
+
+Proprietary
+* `public`
+
+Public Domain
+
+If you do need an open source license not listed above, please let us know.
+
+It is also possible to specify multiple licenses at the same time, as in
+
+```ini
+license = gpl2, artistic2
+```
+
+This specifies dual licenses: GPLv2 and Artistic 2.0.
+
+To upload the package to the official opm package server, you must at least specify
+an open source license here.
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+requires
+--------
+
+Specifies the runtime dependencies of this package.
+
+Multiple dependencies are separated by commas, with optional surrounding spaces. As in
+
+```ini
+requires = foo/lua-resty-bar, baz/lua-resty-blah
+```
+
+You can also specify version number requirements, as in
+
+```ini
+requires = foo/lua-resty-bar >= 0.3.5
+```
+
+The version comparison operators supported are `>=`, `=`, and `>`. Their
+semantics is self-explanatory.
+
+You can also specify the following special dependency names:
+
+* `luajit`
+* `nginx`
+* `openresty`
+* `ngx_http_lua`
+
+Below is such an example:
+
+```ini
+requires = luajit >= 2.1.0, nginx >= 1.11.2, ngx_http_lua = 0.10.6
+```
+
+This key is optional.
+
+[Back to TOC](#table-of-contents)
+
+repo_link
+---------
+
+The URL of the code repository (usually on GitHub). For example,
+
+```ini
+repo_link = https://github.com/openresty/lua-resty-core
+```
+
+If the repository is on GitHub, then `opm build` ensures that the name
+specified in the `github_account` in your `~/.opmrc` file *does* match
+the account in your GitHub repository URL. Otherwise `opm build` reports
+an error.
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+is_original
+-----------
+
+Takes the value `yes` or `no` to specify whether this package is an original work
+(that is, not a fork of another package of somebody else).
+
+This key is mandatory.
+
+[Back to TOC](#table-of-contents)
+
+lib_dir
+-------
+
+Specifies the root directory of the library files (`.lua` files, for example).
+
+Default to `lib`.
+
+This key is optional.
+
+[Back to TOC](#table-of-contents)
+
+main_module
+-----------
+
+This key specifies the PATH of the "main module" file of the current package.
+The `opm build` command reads the "main module" file to extract the version number
+of the current package, for example.
+
+When this key is not specified, then `opm build` will try to find the main module
+file automatically (which might be wrong though).
+
+This key is optional.
+
+[Back to TOC](#table-of-contents)
+
+doc_dir
+-------
+
+Specifies the root directory of the documentation files. Default to `lib`.
+
+`opm build` always tries to collect the documentation files in either the Markdown (`.md` or `.markdown`)
+or the POD (`.pod`) format.
+
+Regardless of the value of this `doc_dir` key, `opm build` always tries to collect
+the following files in the current working directory (which should be the root of
+the current package):
+
+* `README.md`, `README.markdown`, or `README.pod`
+* `COPYING`
+* `COPYRIGHT`
+* `Changes.md`, `Changes.markdown`, or `Changes.pod`
+
+This key is optional.
 
 [Back to TOC](#table-of-contents)
 
@@ -275,10 +531,7 @@ TODO
 
 * Add rate limiting to the GitHub API on the package server.
 * Add automatic email notification for the package processing results on the package server.
-* When the package names provided to `opm get` do not have a publisher ID prefix, we should prompt with a list
-of fully qualified package names that match the package short names.
 * Add `opm doctor` command to check if there is any inconsistency in the current opm package installation tree.
-* Add `opm search <pattern>` command to search package names with a user-supplied pattern.
 * Add `opm files <package>` command to list all the files in the specified package.
 * Add `opm whatprovides <package>` command to find out which package the specified file belongs to.
 * Add plugin mechanisms to `opm build` (similar to Perl's Dist::Zilla packaging framework).
